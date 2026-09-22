@@ -13,11 +13,14 @@ UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW
   .trim()
   .split(/\s+/);
 
-const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+const regionNames = new Intl.DisplayNames(["en-US"], { type: "region" });
+const countryNameOverrides: Record<string, string> = {
+  FK: "Falkland Islands (Islas Malvinas)",
+};
 
 export const countries = countryCodes
   .map((code) => ({
     code,
-    name: regionNames.of(code) ?? code,
+    name: countryNameOverrides[code] ?? regionNames.of(code) ?? code,
   }))
-  .sort((first, second) => first.name.localeCompare(second.name));
+  .sort((first, second) => first.name.localeCompare(second.name, "en-US"));

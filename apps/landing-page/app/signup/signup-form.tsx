@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { SubmitEvent, useState } from "react";
+import { SubmitEvent, useState, useSyncExternalStore } from "react";
 import { countries } from "./countries";
 import styles from "./signup.module.css";
 import { useSignUp } from "@clerk/nextjs";
@@ -10,20 +10,26 @@ interface SignupFormProps {
   role: "client" | "freelancer";
 }
 
+const MIN_PASSWORD_LENGTH = 8;
+
 export function SignupForm({ role }: SignupFormProps) {
+  const { signUp, fetchStatus } = useSignUp();
 
-  const {signUp,fetchStatus} = useSignUp()
-
+  const isMounted = useSyncExternalStore(
+    () => () => undefined,
+    () => true,
+    () => false,
+  );
   const [showPassword, setShowPassword] = useState(false);
   const [status, setStatus] = useState("");
-  const [isError, setIsError] = useState(false)
-  const [verificationCode, setVerificationCode] = useState("")
-  const [pendingEmail, setPendingEmail] = useState("")
-  const [isVerifying, setIsVerifying] = useState(false)
+  const [isError, setIsError] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [pendingEmail, setPendingEmail] = useState("");
+  const [isVerifying, setIsVerifying] = useState(false);
 
   const isClient = role === "client";
-  const isLoading = fetchStatus === "fetching"
-  
+  const isLoading = fetchStatus === "fetching";
+
   // ! get the error message
   function getErrorMessage(error: unknown) {
     if (error instanceof Error) {
@@ -31,104 +37,106 @@ export function SignupForm({ role }: SignupFormProps) {
     }
 
     if (error && typeof error === "object" && "message" in error) {
-      return String(error.message)
+      return String(error.message);
     }
 
-    return "We couldn't create your account. Please check your details and try again."
+    return "We couldn't create your account. Please check your details and try again.";
   }
-
 
   async function redirectWithSessionToken() {
     if (!signUp) {
-      return
+      return;
     }
 
     const { error } = await signUp.finalize({
       navigate: async ({ session, decorateUrl }) => {
-        const token = await session.getToken()
+        const token = await session.getToken();
 
         if (!token) {
-          throw new Error("Clerk did not return a session token.")
+          throw new Error("Clerk did not return a session token.");
         }
 
         window.location.assign(
           decorateUrl(
-            `/api/sign-up?token=${encodeURIComponent(token)}&role=${encodeURIComponent(role)}`
-          )
-        )
-      }
-    })
+            `/api/sign-up?token=${encodeURIComponent(token)}&role=${encodeURIComponent(role)}`,
+          ),
+        );
+      },
+    });
 
     if (error) {
       throw error;
     }
-
   }
 
   // ! handle submit function
   async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    setStatus("")
-    setIsError(false)
+    setStatus("");
+    setIsError(false);
 
     if (!signUp) {
-      setIsError(true)
-      setStatus("Authentication is still loading please try again.")
+      setIsError(true);
+      setStatus("Authentication is still loading please try again.");
       return;
     }
 
-    const formData = new FormData(event?.currentTarget)
+    const formData = new FormData(event?.currentTarget);
 
-const emailAddress = String(formData.get("email")?? "")
+    const emailAddress = String(formData.get("email") ?? "");
+    const password = String(formData.get("password") ?? "");
+
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setIsError(true);
+      setStatus(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
 
     try {
-      const { error} = await signUp.password({
+      const { error } = await signUp.password({
         emailAddress,
-        password: String(formData.get("password")??""),
-        firstName: String(formData.get("firstName")??""),
+        password,
+        firstName: String(formData.get("firstName") ?? ""),
         lastName: String(formData.get("lastName") ?? ""),
         legalAccepted: formData.get("terms") === "on",
         unsafeMetadata: {
           role,
-          country: String(formData.get("country")??"")
-        }
-      })
+          country: String(formData.get("country") ?? ""),
+        },
+      });
 
       if (error) {
-        throw error
+        throw error;
       }
 
       if (signUp.status === "complete") {
-        await redirectWithSessionToken()
+        await redirectWithSessionToken();
         return;
       }
 
-      const verification = await signUp.verifications.sendEmailCode()
+      const verification = await signUp.verifications.sendEmailCode();
 
       if (verification.error) {
-        throw verification.error
+        throw verification.error;
       }
 
-      setPendingEmail(emailAddress)
-      setIsVerifying(true)
-      setStatus("We sent a six-digit verification code to your email.")
-
-      
+      setPendingEmail(emailAddress);
+      setIsVerifying(true);
+      setStatus("We sent a six-digit verification code to your email.");
     } catch (error) {
-      setIsError(true)
-      setStatus(getErrorMessage(error))
+      setIsError(true);
+      setStatus(getErrorMessage(error));
     }
-
   }
 
   // ! social sign up function(Google+Github)
   async function handleSocialSignup(provider: "Google" | "GitHub") {
-    setStatus("")
-    setIsError(false)
+    setStatus("");
+    setIsError(false);
 
     if (!signUp) {
-      setIsError(true)
-      setStatus("Authentication is still loading. Please try again.")
+      setIsError(true);
+      setStatus("Authentication is still loading. Please try again.");
       return;
     }
 
@@ -137,62 +145,54 @@ const emailAddress = String(formData.get("email")?? "")
         strategy: provider === "Google" ? "oauth_google" : "oauth_github",
         redirectUrl: `/auth/complete?role=${encodeURIComponent(role)}`,
         redirectCallbackUrl: `/signup?role=${role}`,
-        unsafeMetadata:{role}
-
-      })
+        unsafeMetadata: { role },
+      });
 
       if (error) {
-        throw error
+        throw error;
       }
-      
     } catch (error) {
-      setIsError(true)
-      setStatus(getErrorMessage(error))
-      
+      setIsError(true);
+      setStatus(getErrorMessage(error));
     }
-
   }
 
-
   //! verification handler
-  async function handleVerification(event:SubmitEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setStatus("")
-    setIsError(false)
+  async function handleVerification(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setStatus("");
+    setIsError(false);
 
     if (!signUp) {
-      setIsError(true)
-      setStatus("Authentication is still loading. Please try again.")
+      setIsError(true);
+      setStatus("Authentication is still loading. Please try again.");
       return;
     }
 
     try {
       const { error } = await signUp.verifications.verifyEmailCode({
-        code: verificationCode
-      })
+        code: verificationCode,
+      });
 
       if (error) {
-        throw error
+        throw error;
       }
 
       if (signUp.status !== "complete") {
-        throw new Error("Your email was verified, but signup is not completed")
+        throw new Error("Your email was verified, but signup is not completed");
       }
 
-      await redirectWithSessionToken()
-
+      await redirectWithSessionToken();
     } catch (error) {
-            setIsError(true);
-            setStatus(getErrorMessage(error));
+      setIsError(true);
+      setStatus(getErrorMessage(error));
     }
-
   }
-
 
   //! resend verification code handler
   async function resendVerificationCode() {
-    setStatus("")
-    setIsError(false)
+    setStatus("");
+    setIsError(false);
 
     if (!signUp) {
       return;
@@ -207,15 +207,12 @@ const emailAddress = String(formData.get("email")?? "")
         return;
       }
 
-      setStatus("A new verification code has been sent.")
-
+      setStatus("A new verification code has been sent.");
     } catch (error) {
-            setIsError(true);
-            setStatus(getErrorMessage(error));
+      setIsError(true);
+      setStatus(getErrorMessage(error));
     }
-
   }
-
 
   if (isVerifying) {
     return (
@@ -287,9 +284,11 @@ const emailAddress = String(formData.get("email")?? "")
 
           {status && (
             <p
-              className={`rounded-xl px-4 py-3 text-center text-xs font-medium ${isError ?
-
-                "bg-[#fff0ee] text-[#9a4d45]" : "bg-[#edf5eb] text-[#4e704b]"}
+              className={`rounded-xl px-4 py-3 text-center text-xs font-medium ${
+                isError
+                  ? "bg-[#fff0ee] text-[#9a4d45]"
+                  : "bg-[#edf5eb] text-[#4e704b]"
+              }
 
                 `}
             >
@@ -430,15 +429,16 @@ const emailAddress = String(formData.get("email")?? "")
               <option value="" disabled>
                 Select your country
               </option>
-              {countries.map((country) => (
-                <option
-                  key={country.code}
-                  value={country.code}
-                  className="text-[#30332f]"
-                >
-                  {country.name}
-                </option>
-              ))}
+              {isMounted &&
+                countries.map((country) => (
+                  <option
+                    key={country.code}
+                    value={country.code}
+                    className="text-[#30332f]"
+                  >
+                    {country.name}
+                  </option>
+                ))}
             </select>
             <svg
               viewBox="0 0 20 20"
@@ -464,7 +464,7 @@ const emailAddress = String(formData.get("email")?? "")
               name="password"
               type={showPassword ? "text" : "password"}
               autoComplete="new-password"
-              minLength={8}
+              minLength={MIN_PASSWORD_LENGTH}
               required
               className="h-12 w-full rounded-xl border border-black/13 bg-white px-4 pr-20 font-normal outline-none transition placeholder:text-[#a2a59f] focus:border-[#5d8b59] focus:ring-3 focus:ring-[#dcebd9]"
               placeholder="At least 8 characters"
@@ -505,6 +505,13 @@ const emailAddress = String(formData.get("email")?? "")
             .
           </span>
         </label>
+
+        <div
+          id="clerk-captcha"
+          data-cl-theme="light"
+          data-cl-language="auto"
+          className="flex w-full justify-center"
+        />
 
         <button
           type="submit"
