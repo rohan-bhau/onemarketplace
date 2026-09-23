@@ -1,20 +1,117 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState } from "react";
+import { SubmitEvent, useEffect, useState } from "react";
 import styles from "../signup/signup.module.css";
+import { useSignIn, useUser } from "@clerk/nextjs";
 
 export function LoginForm() {
+  const {signIn, fetchStatus} = useSignIn()
+  const {user} = useUser()
+
   const [showPassword, setShowPassword] = useState(false);
   const [status, setStatus] = useState("");
+  const [isError, setIsError] = useState(false)
+  const isLoading = fetchStatus === "fetching"
+  const userRole = user?.unsafeMetadata.role;
+  const hasInvalidRole = Boolean(
+    user && userRole !== "client" && userRole !== "freelancer",
+  );
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setStatus("Login is ready to activate when Clerk is connected.");
+  // ! redirect to dashboard url function
+  function redirectToDashboard(role: unknown) {
+    const dashboardUrl =
+      role === "client"
+        ? process.env.NEXT_PUBLIC_CLIENT_DASHBOARD
+        : role === "freelancer"
+          ? process.env.NEXT_PUBLIC_FREELANCER_DASHBOARD
+          : undefined;
+
+    if (!dashboardUrl) {
+      throw new Error("Your account does not have a valid dashboard role.");
+    }
+
+    window.location.assign(dashboardUrl);
   }
 
-  function handleSocialLogin(provider: "Google" | "GitHub") {
-    setStatus(`${provider} login is ready to activate when Clerk is connected.`);
+  useEffect(() => {
+    if (user && !hasInvalidRole) {
+      redirectToDashboard(userRole);
+    }
+  }, [hasInvalidRole, user, userRole]);
+
+  async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsError(false)
+
+    if(!signIn){
+      setIsError(true)
+      setStatus("Authentication is still loading.")
+      return
+    }
+
+    const formData = new FormData(event.currentTarget);
+
+    try {
+      const {error} = await signIn.password({
+        emailAddress: String(formData.get("email") ?? "").trim(),
+        password: String(formData.get("password") ?? ""),
+      })
+
+      if(error) throw error;
+
+      if(signIn.status !== "complete"){
+        throw new Error("Additional verification is required to login.")
+      }
+
+
+      const { error: finalizeError } = await signIn.finalize({
+        navigate: async ({ session }) => {
+          redirectToDashboard(session?.user?.unsafeMetadata?.role);
+        }
+      });
+
+     if (finalizeError) throw finalizeError;
+
+
+    } catch (error) {
+      setIsError(true)
+      setStatus(
+        error instanceof Error ? error.message : "We couldn't login you. Please check your credentials and try again."
+      )
+      
+    }
+
+  }
+
+  async function handleSocialLogin(provider: "Google" | "GitHub") {
+    setStatus("");
+    setIsError(false);
+
+    if (!signIn) {
+      setIsError(true);
+      setStatus("Authentication is still loading.");
+      return;
+    }
+
+    try {
+      const callbackUrl = `${window.location.origin}/login`;
+      const { error } = await signIn.sso({
+        strategy: provider === "Google" ? "oauth_google" : "oauth_github",
+        redirectUrl: callbackUrl,
+        redirectCallbackUrl: callbackUrl,
+      });
+
+      if (error) throw error;
+    } catch (error) {
+      setIsError(true);
+      setStatus(
+        error instanceof Error
+          ? error.message
+          : "We could not continue with social sign-in.",
+      );
+    }
+
   }
 
   return (
@@ -139,17 +236,21 @@ export function LoginForm() {
 
         <button
           type="submit"
+          disabled={isLoading}
           className="h-12 w-full cursor-pointer rounded-xl bg-[#252724] text-sm font-semibold text-white shadow-sm transition hover:bg-[#3b3e39] focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[#4c7849]"
         >
-          Log in
+          {isLoading ? "Logging in..." : "Log in"}
         </button>
 
-        {status && (
+        {(status || hasInvalidRole) && (
           <p
-            className="rounded-xl bg-[#edf5eb] px-4 py-3 text-center text-xs font-medium text-[#4e704b]"
+            className={`rounded-xl bg-[#edf5eb] px-4 py-3 text-center text-xs font-medium text-[#4e704b]
+
+             ${isError || hasInvalidRole ? "bg-[#fff0ee] text-[#914d45]" : "bg-[#edf5eb] text-[#3e704b]"}
+              `}
             role="status"
           >
-            {status}
+            {status || "Your account does not have a valid dashboard role."}
           </p>
         )}
       </form>
