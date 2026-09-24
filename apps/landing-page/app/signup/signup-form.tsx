@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { SubmitEvent, useState, useSyncExternalStore } from "react";
+import { SubmitEvent, useEffect, useState, useSyncExternalStore } from "react";
 import { countries } from "./countries";
 import styles from "./signup.module.css";
-import { useSignUp } from "@clerk/nextjs";
+import { useSignUp, useUser } from "@clerk/nextjs";
 
 interface SignupFormProps {
   role: "client" | "freelancer";
@@ -26,9 +26,33 @@ export function SignupForm({ role }: SignupFormProps) {
   const [verificationCode, setVerificationCode] = useState("");
   const [pendingEmail, setPendingEmail] = useState("");
   const [isVerifying, setIsVerifying] = useState(false);
+  const {user} = useUser()
 
   const isClient = role === "client";
   const isLoading = fetchStatus === "fetching";
+
+  
+    // ! redirect to dashboard url function
+    function redirectToDashboard(role: unknown) {
+      const dashboardUrl =
+        role === "client"
+          ? process.env.NEXT_PUBLIC_CLIENT_DASHBOARD
+          : role === "freelancer"
+            ? process.env.NEXT_PUBLIC_FREELANCER_DASHBOARD
+            : undefined;
+  
+      if (!dashboardUrl) {
+        throw new Error("Your account does not have a valid dashboard role.");
+      }
+  
+      window.location.assign(dashboardUrl);
+    }
+  
+    useEffect(() => {
+      if (user) {
+        redirectToDashboard(user?.unsafeMetadata?.role);
+      }
+    }, [user]);
 
   // ! get the error message
   function getErrorMessage(error: unknown) {
