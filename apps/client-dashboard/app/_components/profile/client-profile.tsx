@@ -2,13 +2,281 @@
 
 import { Icon } from "@iconify/react";
 import Link from "next/link";
-import { useState } from "react";
+import { SubmitEvent, useCallback, useEffect, useRef, useState } from "react";
 import { completedClientContracts } from "../data/client-data";
+import { useAuth, useUser } from "@clerk/nextjs";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
+import { ApiError } from "next/dist/server/api-utils";
+import Image from "next/image";
+import { countries } from "@/utils/countries";
+import { toast } from "sonner";
+import { UserResource } from "@clerk/nextjs/types";
+
+interface ClientProfilePayload {
+  professionalRole: string;
+  companyName: string;
+  companyWebsite: string;
+  companySize: string;
+  industry: string;
+  companyDescription: string;
+  identityVerification?: boolean;
+  paymentMethodVerified?: boolean;
+  joinedAt?: Date;
+}
+
+interface SavedClientProfileResponse {
+  success: boolean;
+  message: string;
+}
+
+interface ClientMetadataResponse extends SavedClientProfileResponse {
+  data: ClientProfilePayload | null;
+}
+
+const industryOptions = [
+  "Healthcare technology",
+  "Software & technology",
+  "Financial services",
+  "Retail & e-commerce",
+  "Education",
+  "Media & entertainment",
+  "Professional services",
+  "Manufacturing",
+  "Real estate",
+  "Nonprofit",
+] as const;
 
 export function ClientProfile({ editing = false }: { editing?: boolean }) {
+  const { user } = useUser();
+  const { getToken } = useAuth();
+  const queryClient = useQueryClient();
+  const router = useRouter();
+
+  const formRef = useRef<HTMLFormElement>(null);
+
   const [saved, setSaved] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState("");
-  const [industry, setIndustry] = useState("Healthcare technology");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarError, setAvatarError] = useState("");
+  const [formError, setFormError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isFormComplete, setIsFormComplete] = useState(false);
+  const [selectedIndustry, setSelectedIndustry] = useState<string | null>(null);
+
+  const { data: profileMetaData, isLoading: profileMetaDataLoading } = useQuery(
+    {
+      queryKey: ["profile-metadata"],
+      enabled: Boolean(user),
+      queryFn: async () => {
+        const token = await getToken();
+
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_SERVER_URI}/client/profile?role=client`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            cache: "no-store",
+          },
+        );
+        const result = (await response.json()) as ClientMetadataResponse;
+
+        if (!response.ok) {
+          throw new Error(
+            result.message || "The client profile could not be loaded.",
+          );
+        }
+
+        return result.data;
+      },
+    },
+  );
+
+  const savedIndustry = profileMetaData?.industry;
+  const industry =
+    selectedIndustry ??
+    (savedIndustry
+      ? industryOptions.some((option) => option === savedIndustry)
+        ? savedIndustry
+        : "Other"
+      : "Software & technology");
+
+  const savedClientProfileMutation = useMutation({
+    mutationFn: async (payload: ClientProfilePayload) => {
+      const token = await getToken();
+
+      if (!token) {
+        throw new Error("Your session as expired. Please sign in again.");
+      }
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_SERVER_URI}/client/profile?role=client`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        },
+      );
+      const result = (await response.json()) as SavedClientProfileResponse;
+
+      if (!response.ok) {
+        throw new Error(
+          result.message || "The client profile could not be saved",
+        );
+      }
+      return result;
+    },
+    onSuccess: (_result, payload) => {
+      queryClient.setQueryData(["profile-metadata"], payload);
+    },
+  });
+
+  const validateForm = useCallback(() => {
+    const form = formRef.current;
+
+    if (!form) {
+      return false;
+    }
+    const requiredFields = Array.from(
+      form.querySelectorAll<
+        HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+      >("[required]"),
+    );
+
+    const hasAllRequiredValues = requiredFields.every(
+      (field) => field.value.trim().length > 0,
+    );
+    const hasAvatar = Boolean(avatarFile || user?.hasImage);
+
+    const isComplete =
+      form.checkValidity() && hasAllRequiredValues && hasAvatar;
+
+    setIsFormComplete(isComplete);
+
+    return isComplete;
+  }, [avatarFile, user?.hasImage]);
+
+  useEffect(
+    () => () => {
+      if (avatarUrl) URL.revokeObjectURL(avatarUrl);
+    },
+    [avatarUrl, user?.hasImage],
+  );
+
+  useEffect(
+    () => () => {
+      if (avatarUrl) URL.revokeObjectURL(avatarUrl);
+    },
+    [avatarUrl],
+  );
+
+  const handleAvatarChange = (file?: File) => {
+    setSaved(false);
+    setAvatarError("");
+
+    if (!file) return;
+
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+    if (!allowedTypes.includes(file.type)) {
+      setAvatarFile(null);
+      setAvatarUrl("");
+      setAvatarError("Choose a JPG, PNG or WEBP Image");
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setAvatarFile(null);
+      setAvatarUrl("");
+      setAvatarError("Profile photo must be 5 MB or smaller");
+      return;
+    }
+
+    setAvatarFile(file);
+    setAvatarUrl(URL.createObjectURL(file));
+  };
+
+  const handleSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSaved(false);
+    setFormError("");
+
+    if (!user) {
+      setFormError("Your authenticated user is not loaded.");
+      return;
+    }
+
+    if (!validateForm()) {
+      event.currentTarget.reportValidity();
+
+      setFormError(
+        user?.hasImage || avatarFile
+          ? "Complete every required field before saving"
+          : "Add a new profile photo and complete every required field before saving",
+      );
+      return;
+    }
+
+    const formData = new FormData(event.currentTarget);
+
+    const firstName = String(formData.get("firstName") ?? "").trim();
+    const lastName = String(formData.get("lastName") ?? "").trim();
+    const location = String(formData.get("location") ?? "").trim();
+    const selectedIndustry = String(formData.get("industry") ?? "").trim();
+    const customIndustry = String(formData.get("customIndustry") ?? "").trim();
+    const profilePayload: ClientProfilePayload = {
+      professionalRole: String(formData.get("jobRole") ?? "").trim(),
+      companyName: String(formData.get("companyName") ?? "").trim(),
+      companyWebsite: String(formData.get("companyWebsite") ?? "").trim(),
+      companySize: String(formData.get("companySize") ?? "").trim(),
+      industry:
+        selectedIndustry === "Other" ? customIndustry : selectedIndustry,
+
+      companyDescription: String(
+        formData.get("companyDescription") ?? "",
+      ).trim(),
+    };
+
+    setIsSubmitting(true);
+
+    try {
+      if (avatarFile) {
+        await user.setProfileImage({ file: avatarFile });
+      }
+
+      await user.update({
+        firstName,
+        lastName,
+        unsafeMetadata: {
+          ...user.unsafeMetadata,
+          country: location,
+        },
+      });
+
+      await savedClientProfileMutation.mutateAsync(profilePayload);
+
+      setSaved(true);
+      toast.success("Account updated successfully!");
+      router.push("/profile");
+    } catch (error) {
+      console.error("Client profile update failed", error);
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "We could not saved your profile. Please try again",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!user || profileMetaDataLoading) {
+    return <ProfileSkeleton editing={editing} />;
+  }
 
   return (
     <>
@@ -53,9 +321,11 @@ export function ClientProfile({ editing = false }: { editing?: boolean }) {
 
       {editing ? (
         <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            setSaved(true);
+          ref={formRef}
+          onSubmit={handleSubmit}
+          onInput={() => {
+            setSaved(false);
+            validateForm();
           }}
           className="mt-8 grid gap-5"
         >
@@ -66,18 +336,13 @@ export function ClientProfile({ editing = false }: { editing?: boolean }) {
               account.
             </p>
             <div className="mt-5 flex flex-col gap-4 rounded-xl bg-[#f4f6f2] p-4 sm:flex-row sm:items-center">
-              {avatarUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={avatarUrl}
-                  alt="Client avatar preview"
-                  className="h-20 w-20 rounded-full object-cover"
-                />
-              ) : (
-                <span className="flex h-20 w-20 items-center justify-center rounded-full bg-[#496e67] text-xl font-semibold text-white">
-                  OB
-                </span>
-              )}
+              <Image
+                src={avatarUrl || user.imageUrl}
+                width={90}
+                height={90}
+                alt="Client avatar preview"
+                className="h-20 w-20 rounded-full"
+              />
               <div>
                 <h3 className="text-sm font-semibold">Profile photo</h3>
                 <p className="mt-1 text-xs text-[#7b8078]">
@@ -91,21 +356,75 @@ export function ClientProfile({ editing = false }: { editing?: boolean }) {
                     accept="image/png,image/jpeg,image/webp"
                     className="sr-only"
                     onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) setAvatarUrl(URL.createObjectURL(file));
+                      handleAvatarChange(event.target.files?.[0]);
                     }}
                   />
                 </label>
+                <p className="inline-flex pl-3 items-center gap-1.5 text-xs text-[#6f756d]">
+                  <Icon
+                    icon="solar:shield-check-linear"
+                    width="15"
+                    className="shrink-0 text-[#5b8658]"
+                  />
+                  Please use your real photo to avoid unnecessary account
+                  restrictions.
+                </p>
               </div>
+              {avatarError && (
+                <p className="mt-2 text-xs font-medium text-[#a34f49]">
+                  {avatarError}
+                </p>
+              )}
             </div>
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <Field label="First name" defaultValue="Olivia" />
-              <Field label="Last name" defaultValue="Bennett" />
-              <Field label="Role" defaultValue="Head of Product" />
               <Field
-                label="Location"
-                defaultValue="San Francisco, United States"
+                name="firstName"
+                label="First name *"
+                defaultValue={user.firstName || "N/A"}
+                placeholder="First Name"
               />
+              <Field
+                name="lastName"
+                label="Last name *"
+                defaultValue={user.lastName || "N/A"}
+                placeholder="Last Name"
+              />
+              <Field
+                label="Role *"
+                name="jobRole"
+                defaultValue={profileMetaData?.professionalRole ?? ""}
+                placeholder="Managing Director"
+              />
+              <label className="text-xs font-semibold">
+                Location *
+                <select
+                  name="location"
+                  required
+                  defaultValue={(() => {
+                    const savedCountry = user?.unsafeMetadata?.country;
+                    if (typeof savedCountry !== "string") return "";
+
+                    return (
+                      countries.find(
+                        (country) =>
+                          country.code === savedCountry ||
+                          country.name === savedCountry,
+                      )?.code ?? ""
+                    );
+                  })()}
+                  className="mt-2 h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm font-normal outline-none focus:border-[#6e916a]"
+                >
+                  <option value="" disabled>
+                    Select Your country
+                  </option>
+                  {countries.map((country) => (
+                    <option value={country.code} key={country.code}>
+                      {" "}
+                      {country.name}{" "}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
           </section>
 
@@ -115,15 +434,23 @@ export function ClientProfile({ editing = false }: { editing?: boolean }) {
               This information is attached to public job posts and proposals.
             </p>
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <Field label="Company name" defaultValue="Wellmade Health" />
               <Field
-                label="Company website"
+                name="companyName"
+                label="Company name *"
+                defaultValue={profileMetaData?.companyName || ""}
+                placeholder="Acme Ltd."
+              />
+              <Field
+                label="Company website *"
+                name="companyWebsite"
                 type="url"
-                defaultValue="https://wellmade.health"
+                defaultValue={profileMetaData?.companyWebsite || ""}
+                placeholder="https://abc.com"
               />
               <SelectField
-                label="Company size"
-                defaultValue="51–200 employees"
+                label="Company size *"
+                name="companySize"
+                defaultValue={profileMetaData?.companySize || "Just me"}
                 options={[
                   "Just me",
                   "2–10 employees",
@@ -136,70 +463,91 @@ export function ClientProfile({ editing = false }: { editing?: boolean }) {
                 ]}
               />
               <label className="text-xs font-semibold">
-                Industry
+                Industry *
                 <select
+                  name="industry"
+                  required
                   value={industry}
-                  onChange={(event) => setIndustry(event.target.value)}
+                  onChange={(event) => setSelectedIndustry(event.target.value)}
                   className="mt-2 h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm font-normal outline-none focus:border-[#6e916a]"
                 >
-                  {[
-                    "Healthcare technology",
-                    "Software & technology",
-                    "Financial services",
-                    "Retail & e-commerce",
-                    "Education",
-                    "Media & entertainment",
-                    "Professional services",
-                    "Manufacturing",
-                    "Real estate",
-                    "Nonprofit",
-                    "Other",
-                  ].map((option) => (
+                  {[...industryOptions, "Other"].map((option) => (
                     <option key={option}>{option}</option>
                   ))}
                 </select>
               </label>
               {industry === "Other" && (
                 <Field
-                  label="Custom industry"
-                  defaultValue=""
+                  label="Custom industry *"
+                  name="customIndustry"
+                  defaultValue={
+                    profileMetaData &&
+                    !industryOptions.some(
+                      (option) => option === profileMetaData.industry,
+                    )
+                      ? profileMetaData.industry
+                      : ""
+                  }
                   placeholder="Enter your industry"
                 />
               )}
             </div>
             <label className="mt-4 block text-xs font-semibold">
-              Company description
+              Company description *
               <textarea
+                name="companyDescription"
+                required
                 rows={5}
-                defaultValue="Wellmade Health builds collaborative software that helps clinical teams coordinate care and make better operational decisions."
+                defaultValue={profileMetaData?.companyDescription ?? ""}
                 className="mt-2 w-full resize-none rounded-xl border border-black/10 p-3 text-sm font-normal outline-none focus:border-[#6e916a]"
+                placeholder="Company description"
               />
             </label>
           </section>
 
+          {formError && (
+            <p role="alert" className="text-sm font-medium text-[#a34f49]">
+              {formError}
+            </p>
+          )}
+
           <div className="flex justify-end gap-2">
-            <Link
-              href="/profile"
+            <button
+              onClick={() => router.push("/profile")}
               className="h-11 rounded-xl border border-black/10 bg-white px-5 text-sm font-semibold"
             >
               Cancel
-            </Link>
+            </button>
             <button
               type="submit"
-              className="h-11 rounded-xl bg-[#252724] px-5 text-sm font-semibold text-white"
+              disabled={
+                !isFormComplete ||
+                isSubmitting ||
+                savedClientProfileMutation.isPending
+              }
+              className="h-11 rounded-xl bg-[#252724] px-5 text-sm font-semibold text-white disabled:opacity-40"
             >
-              Save profile
+              {isSubmitting ? "Saving..." : "Save profile"}
             </button>
           </div>
         </form>
       ) : (
-        <ProfilePreview avatarUrl={avatarUrl} />
+        <ProfilePreview
+          profileMetadata={profileMetaData}
+          user={user}
+        />
       )}
     </>
   );
 }
 
-function ProfilePreview({ avatarUrl }: { avatarUrl: string }) {
+function ProfilePreview({
+  profileMetadata,
+  user,
+}: {
+  profileMetadata: ClientProfilePayload | null | undefined;
+  user: UserResource;
+}) {
   const contractsPerPage = 2;
   const [contractPage, setContractPage] = useState(1);
   const totalContractPages = Math.ceil(
@@ -215,32 +563,32 @@ function ProfilePreview({ avatarUrl }: { avatarUrl: string }) {
     setContractPage(Math.min(Math.max(page, 1), totalContractPages));
   };
 
+  console.log(user?.unsafeMetadata, "user")
+
   return (
     <div className="mt-8 grid items-start gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
       <aside className="grid gap-4 lg:sticky lg:top-24">
         <section className="rounded-2xl border border-black/8 bg-white p-6 text-center">
-          {avatarUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={avatarUrl}
-              alt="Olivia Bennett"
-              className="mx-auto h-28 w-28 rounded-full object-cover"
-            />
-          ) : (
-            <span className="mx-auto flex h-28 w-28 items-center justify-center rounded-full bg-[#496e67] text-2xl font-semibold text-white">
-              OB
-            </span>
-          )}
+          <Image
+            src={user?.imageUrl || ""}
+            width={90}
+            height={90}
+            alt="Olivia Bennett"
+            className="mx-auto h-28 w-28 rounded-full object-cover"
+          />
+
           <h2 className="mt-5 inline-flex items-center justify-center gap-1.5 text-xl font-semibold">
-            Olivia Bennett
-            <Icon
-              icon="solar:verified-check-bold"
-              width="19"
-              className="text-[#5b8658]"
-            />
+            {user?.fullName}
+            {profileMetadata?.identityVerification && (
+              <Icon
+                icon="solar:verified-check-bold"
+                width="19"
+                className="text-[#5b8658]"
+              />
+            )}
           </h2>
           <p className="mt-1 text-sm text-[#747a72]">
-            Head of Product · Wellmade Health
+            {profileMetadata?.professionalRole} · {profileMetadata?.companyName}
           </p>
           <div className="mt-3 flex justify-center text-xs text-[#858a82]">
             <span className="inline-flex max-w-56 items-start gap-1.5 text-center">
@@ -249,14 +597,34 @@ function ProfilePreview({ avatarUrl }: { avatarUrl: string }) {
                 width="16"
                 className="mt-px shrink-0"
               />
-              <span>San Francisco, United States</span>
+              <span>
+                {countries.find(
+                  (country) => country.code === user?.unsafeMetadata.country,
+                )?.name ?? ""}
+              </span>
             </span>
           </div>
           <div className="mt-5 border-t border-black/7 pt-5">
-            <span className="inline-flex items-center gap-2 rounded-full bg-[#e8f3e5] px-3 py-2 text-xs font-semibold text-[#4d784a]">
-              <Icon icon="solar:verified-check-bold" width="17" />
-              Payment method verified
-            </span>
+            {profileMetadata?.paymentMethodVerified ? (
+              <span className="inline-flex items-center gap-2 rounded-full bg-[#e8f3e5] px-3 py-2 text-xs font-semibold text-[#4d784a]">
+                <Icon icon="solar:verified-check-bold" width="17" />
+                Payment method verified
+              </span>
+            ) : (
+              <div className="flex flex-col items-center gap-2.5">
+                <p className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#a34f49]">
+                  <Icon icon="solar:danger-triangle-linear" width="16" />
+                  Payment method not verified
+                </p>
+                <Link
+                  href="/settings?section=finances"
+                  className="inline-flex items-center gap-1.5 h-8 rounded-lg border border-[#d8aaa6] bg-[#fff8f7] px-3 text-xs font-semibold text-[#914a45] transition hover:bg-[#fcecea]"
+                >
+                  Add payment method
+                  <Icon icon="solar:arrow-right-linear" width="14" />
+                </Link>
+              </div>
+            )}
           </div>
         </section>
 
@@ -273,17 +641,28 @@ function ProfilePreview({ avatarUrl }: { avatarUrl: string }) {
         <section className="rounded-2xl border border-black/8 bg-white p-5">
           <h2 className="text-sm font-semibold">Company details</h2>
           <dl className="mt-4 grid gap-4">
-            <SidebarDetail label="Industry" value="Healthcare technology" />
-            <SidebarDetail label="Company size" value="51–200" />
-            <SidebarDetail label="Member since" value="2024" />
+            <SidebarDetail
+              label="Industry"
+              value={profileMetadata?.industry || "N/A"}
+            />
+            <SidebarDetail
+              label="Company size"
+              value={profileMetadata?.companySize || "Just Me"}
+            />
+            <SidebarDetail
+              label="Member since"
+              value={
+                profileMetadata?.joinedAt?.toString().slice(0, 4) || "2026"
+              }
+            />
           </dl>
           <a
-            href="https://wellmade.health"
+            href={profileMetadata?.companyWebsite}
             target="_blank"
             rel="noreferrer"
             className="mt-5 inline-flex items-center gap-1.5 text-xs font-semibold text-[#52784f] hover:underline"
           >
-            wellmade.health
+            {profileMetadata?.companyWebsite}
             <Icon icon="solar:arrow-right-up-linear" width="14" />
           </a>
         </section>
@@ -294,21 +673,30 @@ function ProfilePreview({ avatarUrl }: { avatarUrl: string }) {
           <p className="text-xs font-semibold tracking-[.13em] text-[#62805f] uppercase">
             About the company
           </p>
-          <h2 className="mt-3 text-2xl font-semibold">Wellmade Health</h2>
+          <h2 className="mt-3 text-2xl font-semibold">
+            {profileMetadata?.companyName}
+          </h2>
           <p className="mt-4 max-w-3xl text-sm leading-7 text-[#676e66]">
-            Wellmade Health builds collaborative software that helps clinical
-            teams coordinate care and make better operational decisions.
+            {profileMetadata?.companyDescription}
           </p>
           <div className="mt-6 grid gap-3 sm:grid-cols-3">
-            <Info label="Industry" value="Healthcare technology" />
-            <Info label="Company size" value="51–200 employees" />
-            <Info label="Member since" value="2024" />
+            <Info label="Industry" value={profileMetadata?.industry || ""} />
+            <Info
+              label="Company size"
+              value={profileMetadata?.companySize || "Just Me"}
+            />
+            <Info
+              label="Member since"
+              value={
+                profileMetadata?.joinedAt?.toString().slice(0, 4) || "2026"
+              }
+            />
           </div>
         </section>
         <section className="grid gap-4 sm:grid-cols-3">
           <InfoCard value="$184K" label="Total spent" />
           <InfoCard value="26" label="Contracts completed" />
-          <InfoCard value="4.9" label="Talent rating" />
+          <InfoCard value="4.9" label="Client rating" />
         </section>
         <section className="overflow-hidden rounded-2xl border border-black/8 bg-white">
           <header className="border-b border-black/7 p-5 sm:p-6">
@@ -425,11 +813,13 @@ function ProfilePreview({ avatarUrl }: { avatarUrl: string }) {
 
 function Field({
   label,
+  name,
   defaultValue,
   type = "text",
   placeholder,
 }: {
   label: string;
+  name: string;
   defaultValue: string;
   type?: string;
   placeholder?: string;
@@ -438,6 +828,8 @@ function Field({
     <label className="text-xs font-semibold">
       {label}
       <input
+        name={name}
+        required
         type={type}
         defaultValue={defaultValue}
         placeholder={placeholder}
@@ -564,10 +956,12 @@ function EditSectionSkeleton({
 
 function SelectField({
   label,
+  name,
   defaultValue,
   options,
 }: {
   label: string;
+  name: string;
   defaultValue: string;
   options: string[];
 }) {
@@ -575,6 +969,7 @@ function SelectField({
     <label className="text-xs font-semibold">
       {label}
       <select
+        name={name}
         defaultValue={defaultValue}
         className="mt-2 h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm font-normal outline-none focus:border-[#6e916a]"
       >
