@@ -3,9 +3,15 @@
 import { Icon } from "@iconify/react";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
-import { SubmitEvent, useEffect, useState } from "react";
+import { SubmitEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { DashboardHeader } from "../_components/dashboard/dashboard-header";
+import { useAuth, useUser } from "@clerk/nextjs";
+import Image from "next/image";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ProfileSkeleton } from "./profile-skeleton";
+import { countries } from "@/utils/countries";
+import { useRouter } from "next/navigation";
 
 type PreviewPortfolio = {
   id: number;
@@ -467,6 +473,8 @@ export function ProfileEditor({
 }: {
   initialEditing?: boolean;
 }) {
+  const {user, isLoaded} = useUser()
+  const { getToken } = useAuth();
   const isEditing = initialEditing;
   const {
     register,
@@ -478,17 +486,17 @@ export function ProfileEditor({
   } = useForm<FreelancerProfileFormValues>({
     mode: "onChange",
     defaultValues: {
-      firstName: "Shahriar",
-      lastName: "Sajeeb",
-      country: "Thailand",
-      city: "Chiang Mai",
-      professional_title: "Full-stack product engineer · Next.js & TypeScript",
+      firstName: "",
+      lastName: "",
+      country: "",
+      city: "",
+      professional_title: "",
       professional_description:
-        "I help product teams turn complex ideas into fast, dependable web applications. My work spans product architecture, polished React interfaces, scalable APIs, and production infrastructure. I communicate clearly, ship in thoughtful milestones, and care deeply about the details users feel.",
-      hourly_rate: 85,
+        "",
+      hourly_rate: 20,
       availability_status: "AVAILABLE",
       weekly_availability: "20–30 hours / week",
-      experience_level: "Expert",
+      experience_level: "Entry",
     },
   });
   const [activeSection, setActiveSection] = useState("profile-details");
@@ -501,6 +509,91 @@ export function ProfileEditor({
   const [savedDynamicValues, setSavedDynamicValues] = useState(() =>
     JSON.stringify({ skills: [], languages: initialLanguages, portfolio: [] }),
   );
+
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const hasInitializedProfile = useRef(false);
+
+    const { data: profileMetaData, isLoading: profileMetaDataLoading } =
+      useQuery({
+        queryKey: ["profile-metadata"],
+        enabled: Boolean(user),
+        queryFn: async () => {
+          const token = await getToken();
+
+          const response = await fetch(
+            `${process.env.NEXT_PUBLIC_SERVER_URI}/freelancer/profile?role=freelancer`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+              cache: "no-store",
+            },
+          );
+          const result = (await response.json())
+
+          if (!response.ok) {
+            throw new Error(
+              result.message || "The client profile could not be loaded.",
+            );
+          }
+
+          return result.data;
+        },
+      });
+
+    
+  useEffect(() => {
+    if(!isLoaded || profileMetaDataLoading || !user || hasInitializedProfile.current){
+      return
+    }
+
+    const nextSkills = profileMetaData?.skills ?? []
+    const nextLanguages = profileMetaData?.languages?.length > 0 ? profileMetaData.languages : initialLanguages;
+
+    const nextPortfolio = (profileMetaData?.portfolios ?? []).map(
+      (project: FreelancerPortfolioValue & { id?: string }) => ({
+        ...project,
+        client_id: project.client_id || project.id || crypto.randomUUID(),
+      }),
+    );
+
+    reset({
+      firstName: user.firstName ?? "",
+      lastName: user.lastName ?? "",
+      country:
+        profileMetaData?.country ??
+        (user.unsafeMetadata.country as string | undefined) ??
+        "",
+      city: profileMetaData?.city ?? "",
+      professional_title: profileMetaData?.professional_title ?? "",
+      professional_description: profileMetaData?.professional_description ?? "",
+      hourly_rate: Number(profileMetaData?.hourly_rate ?? 20),
+      availability_status: profileMetaData?.availability_status ?? "AVAILABLE",
+      weekly_availability:
+        profileMetaData?.weekly_availability ?? "20–30 hours / week",
+      experience_level: profileMetaData?.experience_level ?? "Entry",
+      skills: nextSkills,
+      languages: nextLanguages,
+      portfolios: nextPortfolio,
+    });
+
+    setSkills(nextSkills)
+    setLanguages(nextLanguages)
+    setPortfolio(nextPortfolio)
+
+    setSavedDynamicValues(
+      JSON.stringify({
+        skills: nextSkills,
+        languages: nextLanguages,
+        portfolio: nextPortfolio
+      })
+    )
+
+    hasInitializedProfile.current = true
+
+  }, [isLoaded, profileMetaData, profileMetaDataLoading, reset, user]);
+
 
   const updateLanguage = (index: number, update: Partial<Language>) => {
     setLanguages((current) =>
@@ -572,6 +665,79 @@ export function ProfileEditor({
     setShowPortfolioForm(false);
   };
 
+  const profileMutation = useMutation({
+    mutationFn: async (values: FreelancerProfileFormValues) => {
+      if (!user) throw new Error("Your account could not be loaded.");
+
+      const { firstName, lastName, portfolios, ...freelancer_metadata } = values;
+
+      await user.update({
+        firstName,
+        lastName,
+        unsafeMetadata: {
+          ...user.unsafeMetadata,
+          country: values.country,
+        },
+      });
+
+      const token = await getToken();
+      if (!token) throw new Error("Your session has expired.");
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_SERVER_URI}/freelancer/profile?role=freelancer`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            role: "freelancer",
+            freelancer_metadata,
+            freelancer_portfolios: portfolios.map((portfolio) => ({
+              title: portfolio.title,
+              category: portfolio.category,
+              description: portfolio.description,
+              live_url: portfolio.live_url,
+              cover_image: portfolio.cover_image,
+            })),
+          }),
+        },
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.message || "The profile could not be saved.");
+      }
+
+      return result.data;
+    },
+
+    onSuccess: (_profile, values) => {
+      queryClient.invalidateQueries({ queryKey: ["profile-metadata"] });
+      reset(values);
+      setSavedDynamicValues(
+        JSON.stringify({
+          skills: values.skills,
+          languages: values.languages,
+          portfolio: values.portfolios,
+        }),
+      );
+      setSaved(true);
+      toast.success("Profile saved successfully");
+      window.setTimeout(() => setSaved(false), 300);
+
+      router.push("/my-profile");
+    },
+
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : "The profile could not be saved.",
+      );
+    },
+  });
+
   const onSubmit = (values: FreelancerProfileFormValues) => {
     let hasCollectionError = false;
 
@@ -599,38 +765,13 @@ export function ProfileEditor({
       return;
     }
 
-    const profileValues = {
-      clerk_profile: {
-        firstName: values.firstName,
-        lastName: values.lastName,
-      },
-      freelancer_metadata: {
-        professional_title: values.professional_title,
-        professional_description: values.professional_description,
-        hourly_rate: values.hourly_rate,
-        country: values.country,
-        city: values.city,
-        availability_status: values.availability_status,
-        weekly_availability: values.weekly_availability,
-        experience_level: values.experience_level,
-        skills,
-        languages,
-      },
-      freelancer_portfolios: portfolio.map((project) => ({
-        title: project.title,
-        category: project.category,
-        description: project.description,
-        live_url: project.live_url,
-        cover_image: project.cover_image,
-      })),
-    };
-
-    console.log("Freelancer profile values:", profileValues);
-    reset(values);
-    setSavedDynamicValues(JSON.stringify({ skills, languages, portfolio }));
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 3000);
-  };
+    profileMutation.mutate({
+      ...values,
+      skills,
+      languages,
+      portfolios: portfolio
+    })
+  }
 
   const onInvalid = () => {
     toast.error("Please fix the highlighted fields before saving.");
@@ -686,6 +827,12 @@ export function ProfileEditor({
     return <ProfilePreview />;
   }
 
+  if(!isLoaded || profileMetaDataLoading){
+    return <ProfileSkeleton editing={isEditing}/>
+  }
+
+  console.log(profileMetaData)
+
   return (
     <div className="min-h-svh bg-[#f4f6f2] font-(family-name:--font-dm-sans) text-[#242724]">
       <DashboardHeader />
@@ -720,9 +867,13 @@ export function ProfileEditor({
           <aside className="grid gap-5 xl:sticky xl:top-24">
             <section className="rounded-2xl border border-black/8 bg-white p-5 text-center">
               <div className="relative mx-auto h-24 w-24">
-                <span className="flex h-full w-full items-center justify-center rounded-full bg-[#496e67] text-2xl font-semibold text-white">
-                  SK
-                </span>
+                <Image
+                  src={user?.imageUrl || ""}
+                  alt={user?.firstName || ""}
+                  width="90"
+                  height="90"
+                  className="rounded-full object-cover"
+                />
                 <button
                   type="button"
                   aria-label="Change profile photo"
@@ -731,7 +882,7 @@ export function ProfileEditor({
                   <Icon icon="solar:camera-linear" width="16" />
                 </button>
               </div>
-              <h2 className="mt-4 text-lg font-semibold">Shahriar Sajeeb</h2>
+              <h2 className="mt-4 text-lg font-semibold">{user?.fullName}</h2>
               <p className="mt-1 text-xs text-[#777c74]">
                 Full-stack product engineer
               </p>
@@ -814,17 +965,36 @@ export function ProfileEditor({
                 <label className={labelClass}>
                   Country *
                   <select
-                    className={inputClass}
-                    {...register("country", {
-                      required: "Country is required.",
-                    })}
+                  {
+                    ...register("country",{
+                      required: "Country is required"
+                    })
+                  }
+                    defaultValue={(() => {
+                      const savedCountry = user?.unsafeMetadata?.country;
+                      if (typeof savedCountry !== "string") return "";
+
+                      return (
+                        countries.find(
+                          (country) =>
+                            country.code === savedCountry ||
+                            country.name === savedCountry,
+                        )?.code ?? ""
+                      );
+                    })()}
+                    className="mt-2 h-11 w-full rounded-xl border border-black/10 bg-white px-3 text-sm font-normal outline-none focus:border-[#6e916a]"
                   >
-                    <option>Thailand</option>
-                    <option>United States</option>
-                    <option>United Kingdom</option>
-                    <option>Canada</option>
-                    <option>Australia</option>
+                    <option value="" disabled>
+                      Select Your country
+                    </option>
+                    {countries.map((country) => (
+                      <option value={country.code} key={country.code}>
+                        {" "}
+                        {country.name}{" "}
+                      </option>
+                    ))}
                   </select>
+
                   {errors.country && (
                     <span className="text-xs font-medium text-[#a44c4c]">
                       {errors.country.message}
@@ -835,6 +1005,7 @@ export function ProfileEditor({
                   City *
                   <input
                     className={inputClass}
+                    placeholder="New York"
                     {...register("city", { required: "City is required." })}
                   />
                   {errors.city && (
@@ -950,6 +1121,7 @@ export function ProfileEditor({
                   Professional title *
                   <input
                     className={inputClass}
+                    placeholder="Software Engineer"
                     {...register("professional_title", {
                       required: "Professional title is required.",
                     })}
@@ -964,6 +1136,7 @@ export function ProfileEditor({
                   Professional Description *
                   <textarea
                     rows={7}
+                    placeholder="Write something about your profession"
                     {...register("professional_description", {
                       required: "Professional description is required.",
                       minLength: {
@@ -1156,7 +1329,7 @@ export function ProfileEditor({
                 {portfolio.map((project) => (
                   <article
                     key={project.client_id}
-                    className="group flex min-w-0 flex-col overflow-hidden rounded-2xl border border-black/9 bg-white shadow-sm transition duration-200 hover:-translate-y-0.5 hover:border-black/14 hover:shadow-lg hover:shadow-black/6"
+                    className="group flex min-w-0 flex-col overflow-hidden rounded-xl border border-black/9 bg-white  transition duration-200 hover:-translate-y-0.5 hover:border-black/14 hover:shadow hover:shadow-black/2"
                   >
                     <div
                       className="relative aspect-video overflow-hidden bg-[#e4ead8] bg-cover bg-center"
@@ -1252,7 +1425,7 @@ export function ProfileEditor({
                 disabled={!canSave}
                 className="ml-auto cursor-pointer rounded-xl bg-[#252724] px-6 py-3 text-sm font-semibold text-white hover:bg-[#3b3e39] disabled:cursor-not-allowed disabled:opacity-45"
               >
-                Save profile
+                {profileMutation.isPending ? "Saving..." : "Save profile"}
               </button>
             </div>
           </form>

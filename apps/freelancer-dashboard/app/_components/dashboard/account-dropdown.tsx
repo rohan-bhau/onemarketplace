@@ -1,5 +1,6 @@
 "use client";
 
+import { useClerk } from "@clerk/nextjs";
 import { Icon } from "@iconify/react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -26,8 +27,13 @@ const accountItems = [
 ] as const;
 
 export function AccountDropdown() {
+  const {signOut} = useClerk()
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const logOutHandler = async()=>{
+    await signOut()
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -47,11 +53,6 @@ export function AccountDropdown() {
     };
   }, [open]);
 
-  const logOut = () => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-    window.location.assign("/login");
-  };
 
   return (
     <div ref={containerRef} className="relative">
@@ -149,7 +150,7 @@ export function AccountDropdown() {
             <button
               type="button"
               role="menuitem"
-              onClick={logOut}
+              onClick={logOutHandler}
               className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-3 text-left text-[#8b5656] transition hover:bg-[#f8eeee]"
             >
               <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#f7eeee]">
