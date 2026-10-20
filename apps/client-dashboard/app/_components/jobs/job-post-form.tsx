@@ -10,7 +10,6 @@ import {
   type FieldError,
 } from "react-hook-form";
 import { useState } from "react";
-import type { ClientJob } from "../data/client-data";
 import { DatePickerField } from "./date-picker-field";
 import { useAuth } from "@clerk/nextjs";
 import { useMutation } from "@tanstack/react-query";
@@ -27,11 +26,33 @@ type JobPostValues = {
     amount: number;
     due: string;
   }[];
+  existingAttachments: StoredAttachment[]
   questions: { value: string }[];
   attachments?: FileList;
 };
 
-export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
+type StoredAttachment = {
+  fileId: string;
+  fileName: string;
+  fileUrl: string;
+  fileType: string;
+  fileSize: number
+}
+
+export type InitialJobPost = {
+  id: string;
+  title: string;
+  description: string;
+  level: string;
+  duration: string;
+  skills: string[];
+  screeningQuestions: string[];
+  milestones: { title: string; amount: number; due: string }[];
+  attachments: StoredAttachment[]
+
+};
+
+export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
   const editing = Boolean(initialJob);
   const { getToken } = useAuth();
   const [savedStatus, setSavedStatus] = useState<"DRAFT" | "PUBLISHED" | null>(
@@ -43,6 +64,7 @@ export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
     handleSubmit,
     getValues,
     trigger,
+    reset,
     formState: { errors, isValid, isSubmitting },
   } = useForm<JobPostValues>({
     mode: "onChange",
@@ -60,6 +82,7 @@ export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
       questions: initialJob?.screeningQuestions.map((question) => ({
         value: question,
       })) ?? [{ value: "" }],
+      existingAttachments: initialJob?.attachments ?? [],
     },
   });
 
@@ -104,6 +127,11 @@ export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
   const milestones = useWatch({ control, name: "milestones" }) ?? [];
   const questions = useWatch({ control, name: "questions" }) ?? [];
   const attachments = useWatch({ control, name: "attachments" })
+  const existingAttachments = useWatch({
+    control,
+    name: "existingAttachments",
+  }) ?? [];
+
   const totalBudget = milestones.reduce(
     (total, milestone) =>
       total +
@@ -159,9 +187,9 @@ export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
             screening_questions: values.questions
               .map(({ value }) => value.trim())
               .filter(Boolean),
-            attachments: await Promise.all(
+            attachments: values?.attachments?.length ? await Promise.all(
               Array.from(values.attachments ?? []).map(fileToAttachment),
-            ),
+            ) : (initialJob?.attachments ?? []),
             status,
           }),
         },
@@ -177,6 +205,7 @@ export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
 
     onSuccess: (_result, { status }) => {
       setSavedStatus(status);
+      reset()
       toast.success(
         status === "DRAFT"
           ? "Draft saved."
@@ -577,6 +606,36 @@ export function JobPostForm({ initialJob }: { initialJob?: ClientJob }) {
             ))}
           </div>
         )}
+
+        {!attachments?.length &&
+          !!existingAttachments.length &&(
+            <div className="grid gap-2 sm:grid-cols-2">
+              {Array.from(existingAttachments).map((file) => (
+                <a
+                  key={file.fileId}
+                  href={file.fileUrl}
+                  className="flex items-center gap-3 rounded-xl bg-[#f3f5f1] p-3"
+                >
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-[#52784f]">
+                    <Icon
+                      icon={
+                        "solar:document-text-linear"
+                      }
+                      width="19"
+                    />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold">
+                      {file.fileName}
+                    </p>
+                    <p className="mt-0.5 text-[10px] text-[#7b8078]">
+                      {formatFileSize(file.fileSize)}
+                    </p>
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
       </Section>
 
       <div className="sticky bottom-4 flex justify-end gap-2 rounded-2xl border border-black/8 bg-white/95 p-4 shadow-[0_12px_40px_rgba(28,35,28,.12)] backdrop-blur">
