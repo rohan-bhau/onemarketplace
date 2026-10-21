@@ -9,11 +9,12 @@ import {
   useWatch,
   type FieldError,
 } from "react-hook-form";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DatePickerField } from "./date-picker-field";
 import { useAuth } from "@clerk/nextjs";
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { useRouter } from "next/navigation";
 
 type JobPostValues = {
   title: string;
@@ -58,6 +59,9 @@ export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
   const [savedStatus, setSavedStatus] = useState<"DRAFT" | "PUBLISHED" | null>(
     null,
   );
+
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
   const {
     control,
     register,
@@ -65,7 +69,7 @@ export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
     getValues,
     trigger,
     reset,
-    formState: { errors, isValid, isSubmitting },
+    formState: { errors, isValid,dirtyFields, isSubmitting },
   } = useForm<JobPostValues>({
     mode: "onChange",
     defaultValues: {
@@ -127,10 +131,23 @@ export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
   const milestones = useWatch({ control, name: "milestones" }) ?? [];
   const questions = useWatch({ control, name: "questions" }) ?? [];
   const attachments = useWatch({ control, name: "attachments" })
+  const router = useRouter()
   const existingAttachments = useWatch({
     control,
     name: "existingAttachments",
   }) ?? [];
+
+  const hasChanges = Boolean(
+    dirtyFields.title ||
+    dirtyFields.description ||
+    dirtyFields.expertise ||
+    dirtyFields.duration ||
+    dirtyFields.skills ||
+    dirtyFields.milestones ||
+    dirtyFields.questions ||
+    attachments?.length
+
+  )
 
   const totalBudget = milestones.reduce(
     (total, milestone) =>
@@ -213,11 +230,51 @@ export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
             ? "Job post updated"
             : "Job post published",
       );
+      router.push("/jobs")
     },
 
     onError: (error) => toast.error(error.message),
   });
 
+
+  const deleteJob = useMutation({
+    mutationFn: async()=>{
+      const token = await getToken()
+      if (!token) throw new Error("Your session has expired. Please sign in again")
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_SERVER_URI}/jobs/${initialJob?.id}?role=client`,
+        {
+          method: "DELETE",
+          headers: {Authorization: `Bearer ${token}`}
+        }
+      )
+      const result = await response.json()
+      if(!response.ok){
+        throw new Error(result.message || "Job post could not be deleted")
+      }
+    },
+    onSuccess: ()=>{
+      toast.success("Job post deleted.")
+      router.push("/jobs")
+    },
+    onError: (error) => toast.error(error.message)
+  })
+
+  useEffect(() => {
+    if (!confirmDelete) return;
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !deleteJob.isPending) setConfirmDelete(false);
+    };
+
+    document.addEventListener("keydown", closeOnEscape);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.body.style.overflow = "";
+    };
+  }, [confirmDelete, deleteJob.isPending]);
 
 
   return (
@@ -607,55 +664,67 @@ export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
           </div>
         )}
 
-        {!attachments?.length &&
-          !!existingAttachments.length &&(
-            <div className="grid gap-2 sm:grid-cols-2">
-              {Array.from(existingAttachments).map((file) => (
-                <a
-                  key={file.fileId}
-                  href={file.fileUrl}
-                  className="flex items-center gap-3 rounded-xl bg-[#f3f5f1] p-3"
-                >
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-[#52784f]">
-                    <Icon
-                      icon={
-                        "solar:document-text-linear"
-                      }
-                      width="19"
-                    />
-                  </span>
-                  <div className="min-w-0">
-                    <p className="truncate text-xs font-semibold">
-                      {file.fileName}
-                    </p>
-                    <p className="mt-0.5 text-[10px] text-[#7b8078]">
-                      {formatFileSize(file.fileSize)}
-                    </p>
-                  </div>
-                </a>
-              ))}
-            </div>
-          )}
+        {!attachments?.length && !!existingAttachments.length && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {Array.from(existingAttachments).map((file) => (
+              <a
+                key={file.fileId}
+                href={file.fileUrl}
+                className="flex items-center gap-3 rounded-xl bg-[#f3f5f1] p-3"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-[#52784f]">
+                  <Icon icon={"solar:document-text-linear"} width="19" />
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-semibold">
+                    {file.fileName}
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-[#7b8078]">
+                    {formatFileSize(file.fileSize)}
+                  </p>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
       </Section>
 
       <div className="sticky bottom-4 flex justify-end gap-2 rounded-2xl border border-black/8 bg-white/95 p-4 shadow-[0_12px_40px_rgba(28,35,28,.12)] backdrop-blur">
-        <button
-          type="button"
-          disabled={!isValid || isSubmitting || savedJob.isPending}
-          onClick={() =>
-            void handleSubmit((values) =>
-              savedJob.mutateAsync({ values, status: "DRAFT" }),
-            )
-          }
-          className="h-11 rounded-xl border border-black/10 px-5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {savedJob?.isPending && savedJob.variables?.status === "DRAFT"
-            ? "Saving draft..."
-            : "Save draft"}
-        </button>
+        {editing && (
+          <button
+            type="button"
+            disabled={deleteJob.isPending || savedJob.isPending}
+            onClick={() => setConfirmDelete(true)}
+            className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl border border-[#d9aaaa] px-5 text-sm font-semibold text-[#bd2a2a] transition hover:border-[#c98f8f] hover:bg-[#fdf4f4] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Icon icon="solar:trash-bin-trash-linear" width="16" />
+            Delete job post
+          </button>
+        )}
+        {!editing && (
+          <button
+            type="button"
+            disabled={!isValid || isSubmitting || savedJob.isPending}
+            onClick={() =>
+              void handleSubmit((values) =>
+                savedJob.mutateAsync({ values, status: "DRAFT" }),
+              )
+            }
+            className="h-11 rounded-xl border border-black/10 px-5 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {savedJob?.isPending && savedJob.variables?.status === "DRAFT"
+              ? "Saving draft..."
+              : "Save draft"}
+          </button>
+        )}
         <button
           type="submit"
-          disabled={!isValid || isSubmitting || savedJob.isPending}
+          disabled={
+            !isValid ||
+            isSubmitting ||
+            savedJob.isPending ||
+            (editing && !hasChanges)
+          }
           className="h-11 cursor-pointer rounded-xl bg-[#252724] px-5 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:bg-[#b8bcb6] disabled:text-white/80"
         >
           {isSubmitting
@@ -667,6 +736,64 @@ export function JobPostForm({ initialJob }: { initialJob?: InitialJobPost }) {
               : "Publish job"}
         </button>
       </div>
+
+      {confirmDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          onClick={() => !deleteJob.isPending && setConfirmDelete(false)}
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-job-title"
+            aria-describedby="delete-job-description"
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-md rounded-2xl border border-black/8 bg-white p-6 shadow-[0_24px_80px_rgba(18,24,18,.28)]"
+          >
+            <div className="flex items-start gap-3">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#f8eeee] text-[#9b4f4f]">
+                <Icon icon="solar:trash-bin-trash-linear" width="21" />
+              </span>
+              <div className="min-w-0">
+                <h2
+                  id="delete-job-title"
+                  className="text-base font-semibold text-[#242724]"
+                >
+                  Delete this job post?
+                </h2>
+                <p
+                  id="delete-job-description"
+                  className="mt-1.5 text-sm leading-6 text-[#737970]"
+                >
+                  This permanently removes the job post and its uploaded
+                  attachments. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                autoFocus
+                disabled={deleteJob.isPending}
+                onClick={() => setConfirmDelete(false)}
+                className="h-11 rounded-xl border border-black/10 px-5 text-sm font-semibold transition hover:bg-[#f6f7f4] disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleteJob.isPending}
+                onClick={() => deleteJob.mutate()}
+                className="inline-flex h-11 cursor-pointer items-center gap-2 rounded-xl bg-[#9b4f4f] px-5 text-sm font-semibold text-white transition hover:bg-[#873f3f] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Icon icon="solar:trash-bin-trash-linear" width="16" />
+                {deleteJob.isPending ? "Deleting…" : "Delete job post"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </form>
   );
 }
